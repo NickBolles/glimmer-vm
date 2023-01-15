@@ -1,8 +1,10 @@
 import { Option, Recast } from '@glimmer/interfaces';
-import { TokenizerState } from 'simple-html-tokenizer';
+import { EntityParser, TokenizerState } from 'simple-html-tokenizer';
 
 import { Parser, ParserNodeBuilder, Tag } from '../parser';
+import { Source } from '../source';
 import { NON_EXISTENT_LOCATION } from '../source/location';
+import { SourceOffset } from '../source/span';
 import { generateSyntaxError } from '../syntax-error';
 import { appendChild, isHBSLiteral, printLiteral } from '../utils';
 import * as ASTv1 from '../v1/api';
@@ -11,10 +13,21 @@ import { PathExpressionImplV1 } from '../v1/legacy-interop';
 import b from '../v1/parser-builders';
 
 export abstract class HandlebarsNodeVisitors extends Parser {
+  private createFixMeComments = false;
   abstract appendToCommentData(s: string): void;
   abstract beginAttributeValue(quoted: boolean): void;
   abstract finishAttributeValue(): void;
+  abstract createFixMeComment(FIXMeType: string, offset: SourceOffset, node: HBS.Node): void;
 
+  constructor(
+    source: Source,
+    entityParser?: EntityParser,
+    mode?: 'precompile' | 'codemod',
+    createFixMeComments = false
+  ) {
+    super(source, entityParser, mode);
+    this.createFixMeComments = createFixMeComments;
+  }
   private get isTopLevel() {
     return this.elementStack.length === 0;
   }
@@ -75,10 +88,19 @@ export abstract class HandlebarsNodeVisitors extends Parser {
       this.tokenizer.state !== TokenizerState.data &&
       this.tokenizer.state !== TokenizerState.beforeData
     ) {
-      throw generateSyntaxError(
-        'A block may only be used inside an HTML element or another block.',
-        this.source.spanFor(block.loc)
-      );
+      if (this.createFixMeComments) {
+        this.createFixMeComment(
+          'ATTR-BLOCK',
+          this.source.offsetFor(block.loc.start.line, block.loc.start.column),
+          block
+        );
+        return;
+      } else {
+        throw generateSyntaxError(
+          'A block may only be used inside an HTML element or another block.',
+          this.source.spanFor(block.loc)
+        );
+      }
     }
 
     let { path, params, hash } = acceptCallNodes(this, block);
@@ -153,7 +175,18 @@ export abstract class HandlebarsNodeVisitors extends Parser {
       // Tag helpers
       case TokenizerState.tagOpen:
       case TokenizerState.tagName:
-        throw generateSyntaxError(`Cannot use mustaches in an elements tagname`, mustache.loc);
+        if (this.createFixMeComments) {
+          this.createFixMeComment(
+            'TAG-NAME-MUSTACHE',
+            this.source.offsetFor(mustache.loc.start.line, mustache.loc.start.column),
+            rawMustache
+          );
+
+          this.tokenizer.transitionTo(TokenizerState.endTagName);
+          break;
+        } else {
+          throw generateSyntaxError(`Cannot use mustaches in an elements tagname`, mustache.loc);
+        }
 
       case TokenizerState.beforeAttributeName:
         addElementModifier(this.currentStartTag, mustache);
@@ -250,32 +283,64 @@ export abstract class HandlebarsNodeVisitors extends Parser {
     return comment;
   }
 
-  PartialStatement(partial: HBS.PartialStatement): never {
-    throw generateSyntaxError(
-      `Handlebars partials are not supported`,
-      this.source.spanFor(partial.loc)
-    );
+  PartialStatement(partial: HBS.PartialStatement): never | void {
+    if (this.createFixMeComments) {
+      this.createFixMeComment(
+        'PARTIAL',
+        this.source.offsetFor(partial.loc.start.line, partial.loc.start.column),
+        partial
+      );
+    } else {
+      throw generateSyntaxError(
+        `Handlebars partials are not supported`,
+        this.source.spanFor(partial.loc)
+      );
+    }
   }
 
   PartialBlockStatement(partialBlock: HBS.PartialBlockStatement): never {
-    throw generateSyntaxError(
-      `Handlebars partial blocks are not supported`,
-      this.source.spanFor(partialBlock.loc)
-    );
+    if (this.createFixMeComments) {
+      this.createFixMeComment(
+        'PARTIAL-BLOCK',
+        this.source.offsetFor(partialBlock.loc.start.line, partialBlock.loc.start.column),
+        partialBlock
+      );
+    } else {
+      throw generateSyntaxError(
+        `Handlebars partial blocks are not supported`,
+        this.source.spanFor(partialBlock.loc)
+      );
+    }
   }
 
-  Decorator(decorator: HBS.Decorator): never {
-    throw generateSyntaxError(
-      `Handlebars decorators are not supported`,
-      this.source.spanFor(decorator.loc)
-    );
+  Decorator(decorator: HBS.Decorator): never | void {
+    if (this.createFixMeComments) {
+      this.createFixMeComment(
+        'DECORATOR',
+        this.source.offsetFor(decorator.loc.start.line, decorator.loc.start.column),
+        decorator
+      );
+    } else {
+      throw generateSyntaxError(
+        `Handlebars decorators are not supported`,
+        this.source.spanFor(decorator.loc)
+      );
+    }
   }
 
-  DecoratorBlock(decoratorBlock: HBS.DecoratorBlock): never {
-    throw generateSyntaxError(
-      `Handlebars decorator blocks are not supported`,
-      this.source.spanFor(decoratorBlock.loc)
-    );
+  DecoratorBlock(decoratorBlock: HBS.DecoratorBlock): never | void {
+    if (this.createFixMeComments) {
+      this.createFixMeComment(
+        'DECORATOR-BLOCK',
+        this.source.offsetFor(decoratorBlock.loc.start.line, decoratorBlock.loc.start.column),
+        decoratorBlock
+      );
+    } else {
+      throw generateSyntaxError(
+        `Handlebars decorator blocks are not supported`,
+        this.source.spanFor(decoratorBlock.loc)
+      );
+    }
   }
 
   SubExpression(sexpr: HBS.SubExpression): ASTv1.SubExpression {
@@ -287,99 +352,116 @@ export abstract class HandlebarsNodeVisitors extends Parser {
     let { original } = path;
     let parts: string[];
 
-    if (original.indexOf('/') !== -1) {
-      if (original.slice(0, 2) === './') {
+    try {
+      if (original.indexOf('/') !== -1) {
+        if (original.slice(0, 2) === './') {
+          throw generateSyntaxError(
+            `Using "./" is not supported in Glimmer and unnecessary`,
+            this.source.spanFor(path.loc)
+          );
+        }
+        if (original.slice(0, 3) === '../') {
+          throw generateSyntaxError(
+            `Changing context using "../" is not supported in Glimmer`,
+            this.source.spanFor(path.loc)
+          );
+        }
+        if (original.indexOf('.') !== -1) {
+          throw generateSyntaxError(
+            `Mixing '.' and '/' in paths is not supported in Glimmer; use only '.' to separate property paths`,
+            this.source.spanFor(path.loc)
+          );
+        }
+        parts = [path.parts.join('/')];
+      } else if (original === '.') {
         throw generateSyntaxError(
-          `Using "./" is not supported in Glimmer and unnecessary`,
+          `'.' is not a supported path in Glimmer; check for a path with a trailing '.'`,
           this.source.spanFor(path.loc)
         );
+      } else {
+        parts = path.parts;
       }
-      if (original.slice(0, 3) === '../') {
-        throw generateSyntaxError(
-          `Changing context using "../" is not supported in Glimmer`,
-          this.source.spanFor(path.loc)
-        );
+
+      let thisHead = false;
+
+      // This is to fix a bug in the Handlebars AST where the path expressions in
+      // `{{this.foo}}` (and similarly `{{foo-bar this.foo named=this.foo}}` etc)
+      // are simply turned into `{{foo}}`. The fix is to push it back onto the
+      // parts array and let the runtime see the difference. However, we cannot
+      // simply use the string `this` as it means literally the property called
+      // "this" in the current context (it can be expressed in the syntax as
+      // `{{[this]}}`, where the square bracket are generally for this kind of
+      // escaping – such as `{{foo.["bar.baz"]}}` would mean lookup a property
+      // named literally "bar.baz" on `this.foo`). By convention, we use `null`
+      // for this purpose.
+      if (original.match(/^this(\..+)?$/)) {
+        thisHead = true;
       }
-      if (original.indexOf('.') !== -1) {
-        throw generateSyntaxError(
-          `Mixing '.' and '/' in paths is not supported in Glimmer; use only '.' to separate property paths`,
-          this.source.spanFor(path.loc)
-        );
+
+      let pathHead: ASTv1.PathHead;
+      if (thisHead) {
+        pathHead = {
+          type: 'ThisHead',
+          loc: {
+            start: path.loc.start,
+            end: { line: path.loc.start.line, column: path.loc.start.column + 4 },
+          },
+        };
+      } else if (path.data) {
+        let head = parts.shift();
+
+        if (head === undefined) {
+          throw generateSyntaxError(
+            `Attempted to parse a path expression, but it was not valid. Paths beginning with @ must start with a-z.`,
+            this.source.spanFor(path.loc)
+          );
+        }
+
+        pathHead = {
+          type: 'AtHead',
+          name: `@${head}`,
+          loc: {
+            start: path.loc.start,
+            end: { line: path.loc.start.line, column: path.loc.start.column + head.length + 1 },
+          },
+        };
+      } else {
+        let head = parts.shift();
+
+        if (head === undefined) {
+          throw generateSyntaxError(
+            `Attempted to parse a path expression, but it was not valid. Paths must start with a-z or A-Z.`,
+            this.source.spanFor(path.loc)
+          );
+        }
+
+        pathHead = {
+          type: 'VarHead',
+          name: head,
+          loc: {
+            start: path.loc.start,
+            end: { line: path.loc.start.line, column: path.loc.start.column + head.length },
+          },
+        };
       }
-      parts = [path.parts.join('/')];
-    } else if (original === '.') {
-      throw generateSyntaxError(
-        `'.' is not a supported path in Glimmer; check for a path with a trailing '.'`,
+
+      return new PathExpressionImplV1(
+        path.original,
+        pathHead,
+        parts,
         this.source.spanFor(path.loc)
       );
-    } else {
-      parts = path.parts;
-    }
-
-    let thisHead = false;
-
-    // This is to fix a bug in the Handlebars AST where the path expressions in
-    // `{{this.foo}}` (and similarly `{{foo-bar this.foo named=this.foo}}` etc)
-    // are simply turned into `{{foo}}`. The fix is to push it back onto the
-    // parts array and let the runtime see the difference. However, we cannot
-    // simply use the string `this` as it means literally the property called
-    // "this" in the current context (it can be expressed in the syntax as
-    // `{{[this]}}`, where the square bracket are generally for this kind of
-    // escaping – such as `{{foo.["bar.baz"]}}` would mean lookup a property
-    // named literally "bar.baz" on `this.foo`). By convention, we use `null`
-    // for this purpose.
-    if (original.match(/^this(\..+)?$/)) {
-      thisHead = true;
-    }
-
-    let pathHead: ASTv1.PathHead;
-    if (thisHead) {
-      pathHead = {
-        type: 'ThisHead',
-        loc: {
-          start: path.loc.start,
-          end: { line: path.loc.start.line, column: path.loc.start.column + 4 },
-        },
-      };
-    } else if (path.data) {
-      let head = parts.shift();
-
-      if (head === undefined) {
-        throw generateSyntaxError(
-          `Attempted to parse a path expression, but it was not valid. Paths beginning with @ must start with a-z.`,
-          this.source.spanFor(path.loc)
+    } catch (e) {
+      if (this.createFixMeComments) {
+        this.createFixMeComment(
+          'PATH',
+          this.source.offsetFor(path.loc.start.line, path.loc.start.column),
+          path
         );
+      } else {
+        throw e;
       }
-
-      pathHead = {
-        type: 'AtHead',
-        name: `@${head}`,
-        loc: {
-          start: path.loc.start,
-          end: { line: path.loc.start.line, column: path.loc.start.column + head.length + 1 },
-        },
-      };
-    } else {
-      let head = parts.shift();
-
-      if (head === undefined) {
-        throw generateSyntaxError(
-          `Attempted to parse a path expression, but it was not valid. Paths must start with a-z or A-Z.`,
-          this.source.spanFor(path.loc)
-        );
-      }
-
-      pathHead = {
-        type: 'VarHead',
-        name: head,
-        loc: {
-          start: path.loc.start,
-          end: { line: path.loc.start.line, column: path.loc.start.column + head.length },
-        },
-      };
     }
-
-    return new PathExpressionImplV1(path.original, pathHead, parts, this.source.spanFor(path.loc));
   }
 
   Hash(hash: HBS.Hash): ASTv1.Hash {

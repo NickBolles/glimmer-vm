@@ -41,6 +41,12 @@ export class TokenizerEventHandlers extends HandlebarsNodeVisitors {
     appendChild(this.currentElement(), this.finish(this.currentComment));
   }
 
+  createFixMeComment(FIXMeType: string, offset: SourceOffset, node: HBS.Node) {
+    const commentNode = b.comment('', offset);
+    commentNode.value += `TODO-FIXME-${FIXMeType}: ${this.sourceForNode(node)}`;
+    appendChild(this.currentElement(), this.finish(commentNode));
+  }
+
   // Data
 
   beginData(): void {
@@ -363,6 +369,12 @@ export interface PreprocessOptions {
     escaping/unescaping of HTML entity codes.
    */
   mode?: 'codemod' | 'precompile';
+
+  /**
+   * Instead of throwing syntax errors a comment will be added with "TODO-FIXME-<description>"
+   * Allowing for tools to process most of the output and allow manual fixing after the fact
+   */
+  createFixMeComments?: boolean;
 }
 
 export interface Syntax {
@@ -397,6 +409,7 @@ export function preprocess(
   options: PreprocessOptions = {}
 ): ASTv1.Template {
   let mode = options.mode || 'precompile';
+  let createFixMeComments = options.createFixMeComments || false;
 
   let source: Source;
   let ast: HBS.Program;
@@ -433,7 +446,12 @@ export function preprocess(
     end: offsets.endPosition,
   };
 
-  let program = new TokenizerEventHandlers(source, entityParser, mode).acceptTemplate(ast);
+  let program = new TokenizerEventHandlers(
+    source,
+    entityParser,
+    mode,
+    createFixMeComments
+  ).acceptTemplate(ast);
 
   if (options.strictMode) {
     program.blockParams = options.locals ?? [];

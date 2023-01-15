@@ -15,15 +15,15 @@ export interface CommonNode {
 export interface NodeMap {
   Program: { input: Program; output: ASTv1.Template | ASTv1.Block };
   MustacheStatement: { input: MustacheStatement; output: ASTv1.MustacheStatement | void };
-  Decorator: { input: Decorator; output: never };
+  Decorator: { input: Decorator; output: never | void };
   BlockStatement: { input: BlockStatement; output: ASTv1.BlockStatement | void };
-  DecoratorBlock: { input: DecoratorBlock; output: never };
-  PartialStatement: { input: PartialStatement; output: never };
-  PartialBlockStatement: { input: PartialBlockStatement; output: never };
+  DecoratorBlock: { input: DecoratorBlock; output: never | void };
+  PartialStatement: { input: PartialStatement; output: never | void };
+  PartialBlockStatement: { input: PartialBlockStatement; output: never | void };
   ContentStatement: { input: ContentStatement; output: void };
   CommentStatement: { input: CommentStatement; output: ASTv1.MustacheCommentStatement | null };
   SubExpression: { input: SubExpression; output: ASTv1.SubExpression };
-  PathExpression: { input: PathExpression; output: ASTv1.PathExpression };
+  PathExpression: { input: PathExpression; output: ASTv1.PathExpression | void };
   StringLiteral: { input: StringLiteral; output: ASTv1.StringLiteral };
   BooleanLiteral: { input: BooleanLiteral; output: ASTv1.BooleanLiteral };
   NumberLiteral: { input: NumberLiteral; output: ASTv1.NumberLiteral };
